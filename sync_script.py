@@ -3,10 +3,12 @@ import schedule
 import time
 import requests
 from requests.auth import HTTPBasicAuth
+from datetime import datetime
+from pathlib import Path
 
 # Load WebDAV configuration from environment variables
 options = {
-    'webdav_hostname': os.getenv("WEBDAV_HOSTNAME", "https://webdav.myserver.io"),
+    'webdav_hostname': os.getenv("WEBDAV_HOSTNAME", "https://example.webdav.server"),
     'webdav_login': os.getenv("WEBDAV_LOGIN"),
     'webdav_password': os.getenv("WEBDAV_PASSWORD")
 }
@@ -16,14 +18,26 @@ def normalize_path(path):
     return path.rstrip('/') + '/'
 
 remote_dir = normalize_path(os.getenv("REMOTE_DIR", "/remote_folder"))
-local_dir = os.getenv("LOCAL_DIR", "/app/data")  # Mount this to a NAS directory
+local_dir = normalize_path(os.getenv("LOCAL_DIR", "/app/data"))
 
-# Run mode and schedule
-run_mode = os.getenv("RUN_MODE", "scheduled")  # "manual" or "scheduled"
-scheduled_time = os.getenv("SCHEDULED_TIME", "02:00")  # Default to 2 AM
-cleanup_enabled = os.getenv("CLEANUP_ENABLED", "true").lower() == "true"  # Convert to boolean
+# Sync mode and file type filtering
+sync_mode = os.getenv("SYNC_MODE", "one-way-remote-to-local")  # one-way-remote-to-local, one-way-local-to-remote, or two-way
+include_file_types = os.getenv("INCLUDE_FILE_TYPES", "").split(",")  # e.g., "mp4,srt"
+exclude_file_types = os.getenv("EXCLUDE_FILE_TYPES", "").split(",")  # e.g., "txt,tmp"
 
-# Function to send a PROPFIND request and list directory contents
+# Scheduling
+run_mode = os.getenv("RUN_MODE", "scheduled")  # manual or scheduled
+scheduled_time = os.getenv("SCHEDULED_TIME", "02:00")  # Default sync time
+
+# Function to check if a file matches the include/exclude filters
+def file_matches_filters(file_name):
+    if include_file_types and not any(file_name.endswith(f".{ext}") for ext in include_file_types):
+        return False
+    if exclude_file_types and any(file_name.endswith(f".{ext}") for ext in exclude_file_types):
+        return False
+    return True
+
+# Function to list directory contents
 def list_directory(url, username, password):
     try:
         headers = {"Depth": "1"}
@@ -32,39 +46,21 @@ def list_directory(url, username, password):
             print(f"Failed to list directory: {url}, Status Code: {response.status_code}")
             return []
 
-        # Parse the response to extract file names
         from xml.etree import ElementTree as ET
         tree = ET.fromstring(response.text)
         namespaces = {'D': 'DAV:'}
         files = []
         for response in tree.findall("D:response", namespaces):
             href = response.find("D:href", namespaces).text
-            if not href.endswith("/"):  # Exclude directories
-                files.append(href.split("/")[-1])
+            file_name = href.split("/")[-1]
+            if not href.endswith("/") and file_matches_filters(file_name):  # Exclude directories
+                files.append(file_name)
         return files
     except Exception as e:
         print(f"Error listing directory: {e}")
         return []
 
-# Function to sync files
-def sync_files():
-    try:
-        print(f"Normalized remote directory: {remote_dir}")
-        print(f"Connecting to: {options['webdav_hostname']}, with username: {options['webdav_login']}")
-
-        # List files in the remote directory
-        remote_files = list_directory(f"{options['webdav_hostname']}{remote_dir}", options['webdav_login'], options['webdav_password'])
-        print(f"Found remote files: {remote_files}")
-
-        for file in remote_files:
-            local_path = os.path.join(local_dir, file)
-            if not os.path.exists(local_path):
-                print(f"Downloading {file}...")
-                download_file(f"{remote_dir}{file}", local_path)
-    except Exception as e:
-        print(f"Error syncing files: {e}")
-
-# Function to download files
+# Function to download a file
 def download_file(remote_path, local_path):
     try:
         url = f"{options['webdav_hostname']}{remote_path}"
@@ -79,38 +75,65 @@ def download_file(remote_path, local_path):
     except Exception as e:
         print(f"Error downloading file {remote_path}: {e}")
 
-# Function to clean up files
-def cleanup_files():
-    if not cleanup_enabled:
-        return
-
+# Function to upload a file
+def upload_file(local_path, remote_path):
     try:
-        for root, _, files in os.walk(local_dir):
-            for file in files:
-                if not file.endswith(('.mp4', '.srt')):
-                    file_path = os.path.join(root, file)
-                    print(f"Removing {file_path}...")
-                    os.remove(file_path)
+        url = f"{options['webdav_hostname']}{remote_path}"
+        with open(local_path, 'rb') as f:
+            response = requests.put(url, auth=HTTPBasicAuth(options['webdav_login'], options['webdav_password']), data=f)
+        if response.status_code in [200, 201, 204]:
+            print(f"Uploaded {local_path}")
+        else:
+            print(f"Failed to upload {local_path}: {response.status_code}")
     except Exception as e:
-        print(f"Error during cleanup: {e}")
+        print(f"Error uploading file {local_path}: {e}")
 
-# Run sync and cleanup tasks
+# Function to sync files (two-way implementation)
+def sync_files():
+    print(f"Starting sync in {sync_mode} mode...")
+    remote_files = list_directory(f"{options['webdav_hostname']}{remote_dir}", options['webdav_login'], options['webdav_password'])
+    local_files = [f for f in os.listdir(local_dir) if file_matches_filters(f)]
+
+    if sync_mode == "one-way-remote-to-local":
+        for file in remote_files:
+            local_path = os.path.join(local_dir, file)
+            if not os.path.exists(local_path):
+                download_file(f"{remote_dir}{file}", local_path)
+
+    elif sync_mode == "one-way-local-to-remote":
+        for file in local_files:
+            remote_path = f"{remote_dir}{file}"
+            if file not in remote_files:
+                upload_file(os.path.join(local_dir, file), remote_path)
+
+    elif sync_mode == "two-way":
+        # Download files missing in local
+        for file in remote_files:
+            local_path = os.path.join(local_dir, file)
+            if not os.path.exists(local_path):
+                download_file(f"{remote_dir}{file}", local_path)
+
+        # Upload files missing in remote
+        for file in local_files:
+            remote_path = f"{remote_dir}{file}"
+            if file not in remote_files:
+                upload_file(os.path.join(local_dir, file), remote_path)
+
+# Run sync task
 def run_tasks():
-    print(f"Starting tasks at {time.strftime('%Y-%m-%d %H:%M:%S')}...")
+    print(f"Running tasks at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
     sync_files()
-    cleanup_files()
 
-# Schedule tasks
+# Schedule sync tasks
 if run_mode == "scheduled":
     schedule.every().day.at(scheduled_time).do(run_tasks)
     print(f"Scheduled tasks to run daily at {scheduled_time}.")
 
-# Manual execution
+# Main execution
 if __name__ == "__main__":
     if run_mode == "manual":
         run_tasks()  # Run immediately for testing
     else:
-        # Run scheduled tasks
         while True:
             schedule.run_pending()
             time.sleep(1)

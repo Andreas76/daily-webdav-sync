@@ -27,4 +27,4 @@ A simple WebDAV sync tool for syncing single directories. Supports one-way or tw
 ### Running with Docker
 1. Build the Docker image:
    ```bash
-   docker build -t webdav-sync .
+   docker build -t daily-webdav-sync .
