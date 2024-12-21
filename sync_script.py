@@ -21,7 +21,7 @@ remote_dir = normalize_path(os.getenv("REMOTE_DIR", "/remote_folder"))
 local_dir = normalize_path(os.getenv("LOCAL_DIR", "/app/data"))
 
 # Sync mode and file type filtering
-sync_mode = os.getenv("SYNC_MODE", "one-way-remote-to-local")  # one-way-remote-to-local, one-way-local-to-remote, or two-way
+sync_mode = os.getenv("SYNC_MODE", "remote-to-local")  # remote-to-local, local-to-remote, or two-way
 include_file_types = os.getenv("INCLUDE_FILE_TYPES", "").split(",")  # e.g., "mp4,srt"
 exclude_file_types = os.getenv("EXCLUDE_FILE_TYPES", "").split(",")  # e.g., "txt,tmp"
 
@@ -31,11 +31,19 @@ scheduled_time = os.getenv("SCHEDULED_TIME", "02:00")  # Default sync time
 
 # Function to check if a file matches the include/exclude filters
 def file_matches_filters(file_name):
+    # Allow all files if both filters are empty
+    if not include_file_types and not exclude_file_types:
+        return True
+
+    # Check include filter
     if include_file_types and not any(file_name.endswith(f".{ext}") for ext in include_file_types):
-        return False
+        return False  # Skip files not matching the include list
+
+    # Check exclude filter
     if exclude_file_types and any(file_name.endswith(f".{ext}") for ext in exclude_file_types):
-        return False
-    return True
+        return False  # Skip files matching the exclude list
+
+    return True  # File passes the filter
 
 # Function to list directory contents
 def list_directory(url, username, password):
@@ -94,13 +102,13 @@ def sync_files():
     remote_files = list_directory(f"{options['webdav_hostname']}{remote_dir}", options['webdav_login'], options['webdav_password'])
     local_files = [f for f in os.listdir(local_dir) if file_matches_filters(f)]
 
-    if sync_mode == "one-way-remote-to-local":
+    if sync_mode == "remote-to-local":
         for file in remote_files:
             local_path = os.path.join(local_dir, file)
             if not os.path.exists(local_path):
                 download_file(f"{remote_dir}{file}", local_path)
 
-    elif sync_mode == "one-way-local-to-remote":
+    elif sync_mode == "local-to-remote":
         for file in local_files:
             remote_path = f"{remote_dir}{file}"
             if file not in remote_files:
