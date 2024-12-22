@@ -1,14 +1,14 @@
-# Use a lightweight Python base image
-FROM python:3.10-slim
+# Use a lightweight Python image
+FROM python:3.11-slim
 
-# Install necessary Python libraries
-RUN pip install webdavclient3 schedule
-
-# Set the working directory inside the container
+# Set the working directory
 WORKDIR /app
 
-# Copy the syncing script to the container
+# Install dependencies directly
+RUN pip install --no-cache-dir requests schedule
+
+# Copy the script
 COPY sync_script.py .
 
-# Run the syncing script
+# Set the default command to execute the script
 CMD ["python", "sync_script.py"]
