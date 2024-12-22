@@ -5,20 +5,41 @@ import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime
 from pathlib import Path
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Normalize path function
+def normalize_path(path):
+    return path.rstrip('/') + '/'
 
 # Load WebDAV configuration from environment variables
 options = {
-    'webdav_hostname': os.getenv("WEBDAV_HOSTNAME", "https://example.webdav.server"),
+    'webdav_hostname': os.getenv("WEBDAV_HOSTNAME"),
     'webdav_login': os.getenv("WEBDAV_LOGIN"),
     'webdav_password': os.getenv("WEBDAV_PASSWORD")
 }
 
-# Directories
-def normalize_path(path):
-    return path.rstrip('/') + '/'
+# Validate WebDAV configuration
+if not options['webdav_hostname']:
+    raise ValueError("The 'WEBDAV_HOSTNAME' environment variable must be set.")
+if not options['webdav_login']:
+    raise ValueError("The 'WEBDAV_LOGIN' environment variable must be set.")
+if not options['webdav_password']:
+    raise ValueError("The 'WEBDAV_PASSWORD' environment variable must be set.")
 
-remote_dir = normalize_path(os.getenv("REMOTE_DIR", "/remote_folder"))
-local_dir = normalize_path(os.getenv("LOCAL_DIR", "/app/data"))
+# Directories
+remote_dir = normalize_path(os.getenv("REMOTE_DIR", ""))
+if not remote_dir:
+    raise ValueError("The 'REMOTE_DIR' environment variable must be set.")
+
+local_dir = os.getenv("LOCAL_DIR")
+if not local_dir:
+    raise ValueError("The 'LOCAL_DIR' environment variable must be set.")
+local_dir = normalize_path(local_dir)
+if not os.path.exists(local_dir):
+    raise FileNotFoundError(f"Local directory '{local_dir}' does not exist. Please create it.")
 
 # Sync mode and file type filtering
 sync_mode = os.getenv("SYNC_MODE", "remote-to-local")  # remote-to-local, local-to-remote, or two-way
@@ -51,7 +72,7 @@ def list_directory(url, username, password):
         headers = {"Depth": "1"}
         response = requests.request("PROPFIND", url, auth=HTTPBasicAuth(username, password), headers=headers)
         if response.status_code != 207:
-            print(f"Failed to list directory: {url}, Status Code: {response.status_code}")
+            logging.error(f"Failed to list directory: {url}, Status Code: {response.status_code}")
             return []
 
         from xml.etree import ElementTree as ET
@@ -65,7 +86,7 @@ def list_directory(url, username, password):
                 files.append(file_name)
         return files
     except Exception as e:
-        print(f"Error listing directory: {e}")
+        logging.error(f"Error listing directory: {e}")
         return []
 
 # Function to download a file
@@ -77,11 +98,11 @@ def download_file(remote_path, local_path):
             with open(local_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            print(f"Downloaded {local_path}")
+            logging.info(f"Downloaded {local_path}")
         else:
-            print(f"Failed to download {remote_path}: {response.status_code}")
+            logging.error(f"Failed to download {remote_path}: {response.status_code}")
     except Exception as e:
-        print(f"Error downloading file {remote_path}: {e}")
+        logging.error(f"Error downloading file {remote_path}: {e}")
 
 # Function to upload a file
 def upload_file(local_path, remote_path):
@@ -90,52 +111,55 @@ def upload_file(local_path, remote_path):
         with open(local_path, 'rb') as f:
             response = requests.put(url, auth=HTTPBasicAuth(options['webdav_login'], options['webdav_password']), data=f)
         if response.status_code in [200, 201, 204]:
-            print(f"Uploaded {local_path}")
+            logging.info(f"Uploaded {local_path}")
         else:
-            print(f"Failed to upload {local_path}: {response.status_code}")
+            logging.error(f"Failed to upload {local_path}: {response.status_code}")
     except Exception as e:
-        print(f"Error uploading file {local_path}: {e}")
+        logging.error(f"Error uploading file {local_path}: {e}")
 
 # Function to sync files (two-way implementation)
 def sync_files():
-    print(f"Starting sync in {sync_mode} mode...")
-    remote_files = list_directory(f"{options['webdav_hostname']}{remote_dir}", options['webdav_login'], options['webdav_password'])
-    local_files = [f for f in os.listdir(local_dir) if file_matches_filters(f)]
+    try:
+        logging.info(f"Starting sync in {sync_mode} mode...")
+        remote_files = list_directory(f"{options['webdav_hostname']}{remote_dir}", options['webdav_login'], options['webdav_password'])
+        local_files = [f for f in os.listdir(local_dir) if file_matches_filters(f)]
 
-    if sync_mode == "remote-to-local":
-        for file in remote_files:
-            local_path = os.path.join(local_dir, file)
-            if not os.path.exists(local_path):
-                download_file(f"{remote_dir}{file}", local_path)
+        if sync_mode == "remote-to-local":
+            for file in remote_files:
+                local_path = os.path.join(local_dir, file)
+                if not os.path.exists(local_path):
+                    download_file(f"{remote_dir}{file}", local_path)
 
-    elif sync_mode == "local-to-remote":
-        for file in local_files:
-            remote_path = f"{remote_dir}{file}"
-            if file not in remote_files:
-                upload_file(os.path.join(local_dir, file), remote_path)
+        elif sync_mode == "local-to-remote":
+            for file in local_files:
+                remote_path = f"{remote_dir}{file}"
+                if file not in remote_files:
+                    upload_file(os.path.join(local_dir, file), remote_path)
 
-    elif sync_mode == "two-way":
-        # Download files missing in local
-        for file in remote_files:
-            local_path = os.path.join(local_dir, file)
-            if not os.path.exists(local_path):
-                download_file(f"{remote_dir}{file}", local_path)
+        elif sync_mode == "two-way":
+            # Download files missing in local
+            for file in remote_files:
+                local_path = os.path.join(local_dir, file)
+                if not os.path.exists(local_path):
+                    download_file(f"{remote_dir}{file}", local_path)
 
-        # Upload files missing in remote
-        for file in local_files:
-            remote_path = f"{remote_dir}{file}"
-            if file not in remote_files:
-                upload_file(os.path.join(local_dir, file), remote_path)
+            # Upload files missing in remote
+            for file in local_files:
+                remote_path = f"{remote_dir}{file}"
+                if file not in remote_files:
+                    upload_file(os.path.join(local_dir, file), remote_path)
+    except Exception as e:
+        logging.error(f"Error during synchronization: {e}")
 
 # Run sync task
 def run_tasks():
-    print(f"Running tasks at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
+    logging.info(f"Running tasks at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
     sync_files()
 
 # Schedule sync tasks
 if run_mode == "scheduled":
     schedule.every().day.at(scheduled_time).do(run_tasks)
-    print(f"Scheduled tasks to run daily at {scheduled_time}.")
+    logging.info(f"Scheduled tasks to run daily at {scheduled_time}.")
 
 # Main execution
 if __name__ == "__main__":
