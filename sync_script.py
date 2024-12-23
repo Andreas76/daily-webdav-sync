@@ -8,7 +8,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 # Configure logging with a rotating file handler
-log_file = "sync_debug.log"
+log_file = "/tmp/sync_debug.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
