@@ -20,7 +20,7 @@ logging.basicConfig(
 
 # Normalize path function
 def normalize_path(path):
-    return path.rstrip('/') + '/'
+    return path.rstrip("/") + "/" if not path.endswith("/") else path
 
 # Load WebDAV configuration from environment variables
 options = {
@@ -42,11 +42,13 @@ remote_dir = normalize_path(os.getenv("REMOTE_DIR", ""))
 if not remote_dir:
     raise ValueError("The 'REMOTE_DIR' environment variable must be set.")
 
-local_dir = normalize_path(os.getenv("LOCAL_DIR"))
+local_dir = os.getenv("LOCAL_DIR")
 if not local_dir:
     raise ValueError("The 'LOCAL_DIR' environment variable must be set.")
 if not os.path.exists(local_dir):
     raise FileNotFoundError(f"Local directory '{local_dir}' does not exist. Please create it.")
+
+local_dir = normalize_path(local_dir)
 
 # Sync mode and file type filtering
 sync_mode = os.getenv("SYNC_MODE", "remote-to-local")
